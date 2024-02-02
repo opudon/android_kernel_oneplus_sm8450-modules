@@ -2270,7 +2270,6 @@ struct ipa_minidump_data {
  * @mhi_evid_limits: MHI event rings start and end ids
  *  finished initializing. Example of use - IOCTLs to /dev/ipa
  * @flt_rt_counters: the counters usage info for flt rt stats
- * @is_eth_double_vlan_mode: double_vlan enabled for eth ifaces
  * @wdi3_ctx: IPA wdi3 context
  * @gsi_info: channel/protocol info for GSI offloading uC stats
  * @app_vote: holds userspace application clock vote count
@@ -2449,7 +2448,6 @@ struct ipa3_context {
 	int num_ipa_cne_evt_req;
 	struct mutex ipa_cne_evt_lock;
 	bool vlan_mode_iface[IPA_VLAN_IF_MAX];
-	bool is_eth_double_vlan_mode;
 	bool wdi_over_pcie;
 	u32 entire_ipa_block_size;
 	bool do_register_collection_on_crash;
@@ -2560,11 +2558,9 @@ struct ipa3_context {
 	struct ipa3_page_recycle_stats prev_low_lat_data_recycle_stats;
 	struct mutex recycle_stats_collection_lock;
 	struct mutex ssr_lock;
-	bool gfp_no_retry;
 };
 
 struct ipa3_plat_drv_res {
-	bool gfp_no_retry;
 	bool use_ipa_teth_bridge;
 	u32 ipa_mem_base;
 	u32 ipa_mem_size;
@@ -3534,7 +3530,6 @@ struct ipa_smmu_cb_ctx *ipa3_get_smmu_ctx(enum ipa_smmu_cb_type);
 struct iommu_domain *ipa3_get_smmu_domain(void);
 struct iommu_domain *ipa3_get_uc_smmu_domain(void);
 struct iommu_domain *ipa3_get_wlan_smmu_domain(void);
-struct device *ipa3_get_wlan_device(void);
 struct iommu_domain *ipa3_get_wlan1_smmu_domain(void);
 struct iommu_domain *ipa3_get_eth_smmu_domain(void);
 struct iommu_domain *ipa3_get_eth1_smmu_domain(void);

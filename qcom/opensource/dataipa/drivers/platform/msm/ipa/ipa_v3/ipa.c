@@ -801,21 +801,10 @@ struct iommu_domain *ipa3_get_eth1_smmu_domain(void)
 	return ipa3_get_smmu_domain_by_type(IPA_SMMU_CB_ETH1);
 }
 
+
 struct iommu_domain *ipa3_get_11ad_smmu_domain(void)
 {
 	return ipa3_get_smmu_domain_by_type(IPA_SMMU_CB_11AD);
-}
-
-struct device *ipa3_get_wlan_device(void)
-{
-	if (ipa3_ctx->ipa_hw_type == IPA_HW_v4_5 &&
-		ipa_get_wdi_version() == IPA_WDI_1) {
-		if (smmu_cb[IPA_SMMU_CB_WLAN].valid)
-			return smmu_cb[IPA_SMMU_CB_WLAN].dev;
-		IPAERR("CB not valid\n");
-		return NULL;
-	}
-	return ipa3_ctx->pdev;
 }
 
 struct device *ipa3_get_dma_dev(void)
@@ -823,7 +812,6 @@ struct device *ipa3_get_dma_dev(void)
 	return ipa3_ctx->pdev;
 }
 EXPORT_SYMBOL(ipa3_get_dma_dev);
-
 
 /**
  * ipa3_get_smmu_ctx()- Return smmu context for the given cb_type
@@ -2676,6 +2664,7 @@ done:
 	return res;
 }
 
+#ifdef IPA_IOCTL_SET_EXT_ROUTER_MODE
 /**
  * ipa3_send_ext_router_info() - Pass ext_router_info to the IPACM
  * @info: pointer to the ext router info
@@ -2716,6 +2705,7 @@ int ipa3_send_ext_router_info(struct ipa_ioc_ext_router_info *info)
 done:
 	return res;
 }
+#endif
 
 static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -2737,7 +2727,9 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct ipa_ioc_eogre_info eogre_info;
 	struct ipa_ioc_macsec_info macsec_info;
 	struct ipa_macsec_map *macsec_map;
+#ifdef IPA_IOCTL_SET_EXT_ROUTER_MODE
 	struct ipa_ioc_ext_router_info *ext_router_info;
+#endif
 	bool send2uC, send2ipacm;
 	size_t sz;
 	int pre_entry;
@@ -4067,12 +4059,6 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 
 		retval = ipa3_check_eogre(&eogre_info, &send2uC, &send2ipacm);
-		if (retval == -EIO)
-		{
-			IPADBG("no work needs to be done but return success to caller");
-			retval = 0;
-			break;
-		}
 
 		ipa3_ctx->eogre_enabled = (retval == 0);
 
@@ -4103,12 +4089,6 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		memset(&eogre_info, 0, sizeof(eogre_info));
 
 		retval = ipa3_check_eogre(&eogre_info, &send2uC, &send2ipacm);
-		if (retval == -EIO)
-		{
-			IPADBG("no work needs to be done but return success to caller");
-			retval = 0;
-			break;
-		}
 
 		if (retval == 0 && send2uC == true) {
 			/*
@@ -4178,6 +4158,7 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			macsec_map);
 		break;
 
+#ifdef IPA_IOCTL_SET_EXT_ROUTER_MODE
 	case IPA_IOC_SET_EXT_ROUTER_MODE:
 		IPADBG("Got IPA_IOC_SET_EXT_ROUTER_MODE\n");
 
@@ -4201,6 +4182,7 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			retval = -EFAULT;
 		}
 		break;
+#endif
 
 	default:
 		IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
@@ -4810,20 +4792,20 @@ static int ipa3_q6_clean_q6_rt_tbls(enum ipa_ip_type ip,
 		modem_rt_index_hi = IPA_MEM_PART(v4_modem_rt_index_hi);
 		if (rlt == IPA_RULE_HASHABLE) {
 			lcl_addr_mem_part = IPA_MEM_PART(v4_rt_hash_ofst);
-			lcl_hdr_sz =  IPA_MEM_PART(v4_rt_hash_size);
+			lcl_hdr_sz =  IPA_MEM_PART(v4_flt_hash_size);
 		} else {
 			lcl_addr_mem_part = IPA_MEM_PART(v4_rt_nhash_ofst);
-			lcl_hdr_sz = IPA_MEM_PART(v4_rt_nhash_size);
+			lcl_hdr_sz = IPA_MEM_PART(v4_flt_nhash_size);
 		}
 	} else {
 		modem_rt_index_lo = IPA_MEM_PART(v6_modem_rt_index_lo);
 		modem_rt_index_hi = IPA_MEM_PART(v6_modem_rt_index_hi);
 		if (rlt == IPA_RULE_HASHABLE) {
 			lcl_addr_mem_part = IPA_MEM_PART(v6_rt_hash_ofst);
-			lcl_hdr_sz =  IPA_MEM_PART(v6_rt_hash_size);
+			lcl_hdr_sz =  IPA_MEM_PART(v6_flt_hash_size);
 		} else {
 			lcl_addr_mem_part = IPA_MEM_PART(v6_rt_nhash_ofst);
-			lcl_hdr_sz = IPA_MEM_PART(v6_rt_nhash_size);
+			lcl_hdr_sz = IPA_MEM_PART(v6_flt_nhash_size);
 		}
 	}
 
@@ -4831,7 +4813,7 @@ static int ipa3_q6_clean_q6_rt_tbls(enum ipa_ip_type ip,
 		modem_rt_index_hi - modem_rt_index_lo + 1,
 		lcl_hdr_sz, lcl_hdr_sz, &mem, true);
 	if (retval) {
-		IPAERR("fail generate empty rt img, size %d\n", lcl_hdr_sz);
+		IPAERR("fail generate empty rt img\n");
 		return -ENOMEM;
 	}
 
@@ -5228,30 +5210,27 @@ void ipa3_q6_pre_shutdown_cleanup(void)
 		 */
 		ipa_assert();
 	}
+	/* Remove delay from Q6 PRODs to avoid pending descriptors
+	 * on pipe reset procedure
+	 */
 
-	if(ipa3_ctx->ipa_hw_type != IPA_HW_v5_2) {
-		/* Remove delay from Q6 PRODs to avoid pending descriptors
-	 	* on pipe reset procedure
-	 	*/
-
-		if (ipa3_ctx->ipa_endp_delay_wa_v2) {
-			ipa3_q6_pipe_flow_control(false);
+	if (ipa3_ctx->ipa_endp_delay_wa_v2) {
+		ipa3_q6_pipe_flow_control(false);
+		ipa3_set_reset_client_prod_pipe_delay(true,
+			IPA_CLIENT_USB_PROD);
+	} else if (!ipa3_ctx->ipa_endp_delay_wa) {
+		ipa3_q6_pipe_delay(false);
+		ipa3_set_reset_client_prod_pipe_delay(true,
+			IPA_CLIENT_USB_PROD);
+		if (ipa3_ctx->ipa_config_is_auto)
 			ipa3_set_reset_client_prod_pipe_delay(true,
-				IPA_CLIENT_USB_PROD);
-		} else if (!ipa3_ctx->ipa_endp_delay_wa) {
-			ipa3_q6_pipe_delay(false);
-			ipa3_set_reset_client_prod_pipe_delay(true,
-				IPA_CLIENT_USB_PROD);
-			if (ipa3_ctx->ipa_config_is_auto)
-				ipa3_set_reset_client_prod_pipe_delay(true,
-					IPA_CLIENT_USB2_PROD);
-		} else {
-			ipa3_start_stop_client_prod_gsi_chnl(IPA_CLIENT_USB_PROD,
+				IPA_CLIENT_USB2_PROD);
+	} else {
+		ipa3_start_stop_client_prod_gsi_chnl(IPA_CLIENT_USB_PROD,
 						false);
-			if (ipa3_ctx->ipa_config_is_auto)
-				ipa3_start_stop_client_prod_gsi_chnl(
-					IPA_CLIENT_USB2_PROD, false);
-		}
+		if (ipa3_ctx->ipa_config_is_auto)
+			ipa3_start_stop_client_prod_gsi_chnl(
+				IPA_CLIENT_USB2_PROD, false);
 	}
 
 	IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
@@ -5282,26 +5261,6 @@ void ipa3_q6_post_shutdown_cleanup(void)
 	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_0) {
 		prod = true;
 		ipa3_halt_q6_gsi_channels(prod);
-		if (ipa3_ctx->ipa_hw_type == IPA_HW_v5_2) {
-			if (ipa3_ctx->ipa_endp_delay_wa_v2) {
-				ipa3_q6_pipe_flow_control(false);
-				ipa3_set_reset_client_prod_pipe_delay(true,
-					IPA_CLIENT_USB_PROD);
-			} else if (!ipa3_ctx->ipa_endp_delay_wa) {
-				ipa3_q6_pipe_delay(false);
-				ipa3_set_reset_client_prod_pipe_delay(true,
-				IPA_CLIENT_USB_PROD);
-				if (ipa3_ctx->ipa_config_is_auto)
-					ipa3_set_reset_client_prod_pipe_delay(true,
-						IPA_CLIENT_USB2_PROD);
-			} else {
-				ipa3_start_stop_client_prod_gsi_chnl(IPA_CLIENT_USB_PROD,
-							false);
-				if (ipa3_ctx->ipa_config_is_auto)
-					ipa3_start_stop_client_prod_gsi_chnl(
-						IPA_CLIENT_USB2_PROD, false);
-			}
-		}
 		IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
 		IPADBG("Exit without consumer check\n");
 		return;
@@ -6486,11 +6445,12 @@ void ipa3_disable_clks(void)
 
 	IPADBG("Disabling IPA clocks and bus voting\n");
 
-	if (atomic_read(&ipa3_ctx->ipa_clk_vote) == 0)
-	{
-		IPAERR("IPA clock already disabled\n");
+	//#ifdef OPLUS_BUG_DEBUG
+	if (atomic_read(&ipa3_ctx->ipa_clk_vote) == 0) {
+		IPAERR("Current clock vote is set to %d\n", ipa3_ctx->ipa_clk_vote);
 		return;
 	}
+	//#endif
 
 	/*
 	 * We see a NoC error on GSI on this flag sequence.
@@ -8402,15 +8362,10 @@ static ssize_t ipa3_write(struct file *file, const char __user *buf,
 	/* Check MHI configuration on MDM devices */
 	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_MDM) {
 
-		/* todo in future: change vlan_mode_iface from bool to enum
-		 * and support double vlan for all ifaces
-		 */
-		if (strnstr(dbg_buff, "double-vlan", strlen(dbg_buff)))
-			ipa3_ctx->is_eth_double_vlan_mode = true;
-
 		if (strnstr(dbg_buff, "vlan", strlen(dbg_buff))) {
 			if (strnstr(dbg_buff, STR_ETH_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_EMAC] = true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_EMAC] =
+				true;
 #if IPA_ETH_API_VER >= 2
 			/* In Dual NIC mode we get "vlan: eth [eth0|eth1] [eth0|eth1]?" while device name is
 			   "eth0" in legacy so, we set it to false to diffrentiate Dual NIC from legacy */
@@ -8424,9 +8379,11 @@ static ssize_t ipa3_write(struct file *file, const char __user *buf,
 			}
 #endif
 			if (strnstr(dbg_buff, STR_RNDIS_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_RNDIS] = true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_RNDIS] =
+				true;
 			if (strnstr(dbg_buff, STR_ECM_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_ECM] = true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_ECM] =
+				true;
 
 			/*
 			 * when vlan mode is passed to our dev we expect
@@ -8908,7 +8865,6 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 				0xFF;
 	}
 
-	ipa3_ctx->gfp_no_retry = resource_p->gfp_no_retry;
 	ipa3_ctx->ipa_wrapper_base = resource_p->ipa_mem_base;
 	ipa3_ctx->ipa_wrapper_size = resource_p->ipa_mem_size;
 	ipa3_ctx->ipa_cfg_offset = resource_p->ipa_cfg_offset;
@@ -9957,7 +9913,6 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 	ipa_drv_res->rmnet_ll_enable = 0;
 	ipa_drv_res->ulso_wa = false;
 	ipa_drv_res->is_dual_pine_config = false;
-	ipa_drv_res->gfp_no_retry = false;
 
 	/* Get IPA HW Version */
 	result = of_property_read_u32(pdev->dev.of_node, "qcom,ipa-hw-ver",
@@ -10068,11 +10023,6 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 		ipa_drv_res->ipa_endp_delay_wa_v2 = false;
 	}
 
-	ipa_drv_res->gfp_no_retry = of_property_read_bool(pdev->dev.of_node,
-			"qcom,gfp-no-retry");
-	IPADBG(": gfp-no-retry = %s\n",
-			ipa_drv_res->gfp_no_retry
-			? "True" : "False");
 
 	ipa_drv_res->ulso_wa = of_property_read_bool(pdev->dev.of_node,
 			"qcom,ipa-ulso-wa");
