@@ -152,7 +152,7 @@ struct sde_dbg_evtlog_log {
 struct sde_dbg_evtlog {
 	struct sde_dbg_evtlog_log logs[SDE_EVTLOG_ENTRY];
 	u32 first;
-	atomic_t last;
+	u32 last;
 	u32 last_dump;
 	atomic_t curr;
 	u32 next;
@@ -514,5 +514,9 @@ static inline void sde_rsc_debug_dump(u32 mux_sel)
  */
 void sde_rsc_debug_dump(u32 mux_sel);
 #endif
+
+#ifdef OPLUS_FEATURE_DISPLAY
+void oplus_sde_evtlog_dump_all(void);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 #endif /* SDE_DBG_H_ */

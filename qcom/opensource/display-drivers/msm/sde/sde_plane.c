@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (C) 2014-2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -37,6 +37,14 @@
 #include "sde_vbif.h"
 #include "sde_plane.h"
 #include "sde_color_processing.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "../oplus/oplus_display_private_api.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+extern u32 iris_pq_disable;
+#endif
 
 #define SDE_DEBUG_PLANE(pl, fmt, ...) SDE_DEBUG("plane%d " fmt,\
 		(pl) ? (pl)->base.base.id : -1, ##__VA_ARGS__)
@@ -80,9 +88,6 @@ enum sde_plane_qos {
 /*
  * struct sde_plane - local sde plane structure
  * @aspace: address space pointer
- * @csc_cfg: Decoded user configuration for csc
- * @csc_usr_ptr: Points to csc_cfg if valid user config available
- * @csc_ptr: Points to sde_csc_cfg structure to use for current
  * @mplane_list: List of multirect planes of the same pipe
  * @catalog: Points to sde catalog structure
  * @revalidate: force revalidation of all the plane properties
@@ -112,10 +117,6 @@ struct sde_plane {
 	struct sde_mdss_cfg *catalog;
 	bool revalidate;
 	bool xin_halt_forced_clk;
-
-	struct sde_csc_cfg csc_cfg;
-	struct sde_csc_cfg *csc_usr_ptr;
-	struct sde_csc_cfg *csc_ptr;
 
 	uint32_t cached_lut_flag;
 	struct sde_hw_scaler3_cfg scaler3_cfg;
@@ -1107,7 +1108,7 @@ static void _sde_plane_setup_pixel_ext(struct sde_plane *psde,
 	}
 }
 
-static inline void _sde_plane_setup_csc(struct sde_plane *psde)
+static inline void _sde_plane_setup_csc(struct sde_plane *psde, struct sde_plane_state *pstate)
 {
 	static const struct sde_csc_cfg sde_csc_YUV2RGB_601L = {
 		{
@@ -1138,23 +1139,26 @@ static inline void _sde_plane_setup_csc(struct sde_plane *psde)
 		{ 0x00, 0x3ff, 0x00, 0x3ff, 0x00, 0x3ff,},
 	};
 
-	if (!psde) {
+	if (!psde || !pstate) {
 		SDE_ERROR("invalid plane\n");
 		return;
 	}
 
 	/* revert to kernel default if override not available */
-	if (psde->csc_usr_ptr)
-		psde->csc_ptr = psde->csc_usr_ptr;
+	if (pstate->csc_usr_ptr)
+		pstate->csc_ptr = pstate->csc_usr_ptr;
 	else if (BIT(SDE_SSPP_CSC_10BIT) & psde->features)
-		psde->csc_ptr = (struct sde_csc_cfg *)&sde_csc10_YUV2RGB_601L;
+		pstate->csc_ptr = (struct sde_csc_cfg *)&sde_csc10_YUV2RGB_601L;
 	else
-		psde->csc_ptr = (struct sde_csc_cfg *)&sde_csc_YUV2RGB_601L;
+		pstate->csc_ptr = (struct sde_csc_cfg *)&sde_csc_YUV2RGB_601L;
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_sde_plane_setup_csc(pstate->csc_ptr);
+#endif
 	SDE_DEBUG_PLANE(psde, "using 0x%X 0x%X 0x%X...\n",
-			psde->csc_ptr->csc_mv[0],
-			psde->csc_ptr->csc_mv[1],
-			psde->csc_ptr->csc_mv[2]);
+			pstate->csc_ptr->csc_mv[0],
+			pstate->csc_ptr->csc_mv[1],
+			pstate->csc_ptr->csc_mv[2]);
 }
 
 static void sde_color_process_plane_setup(struct drm_plane *plane)
@@ -1325,6 +1329,81 @@ static void sde_color_process_plane_setup(struct drm_plane *plane)
 	}
 }
 
+#if defined(CONFIG_PXLW_IRIS)
+static void sde_color_process_plane_disable(struct drm_plane *plane)
+{
+	struct sde_plane *psde;
+	struct sde_plane_state *pstate;
+	struct drm_msm_3d_gamut *vig_gamut = NULL;
+	struct drm_msm_igc_lut *igc = NULL;
+	struct drm_msm_pgc_lut *gc = NULL;
+	size_t size = 0;
+	struct sde_hw_cp_cfg hw_cfg = {};
+	struct sde_hw_ctl *ctl = _sde_plane_get_hw_ctl(plane);
+	uint32_t dirty = 0;
+
+	psde = to_sde_plane(plane);
+	pstate = to_sde_plane_state(plane->state);
+
+	dirty = SDE_PLANE_DIRTY_VIG_GAMUT | SDE_PLANE_DIRTY_VIG_IGC
+			| SDE_PLANE_DIRTY_DMA_IGC | SDE_PLANE_DIRTY_DMA_GC;
+
+	if (dirty & SDE_PLANE_DIRTY_VIG_GAMUT &&
+			psde->pipe_hw->ops.setup_vig_gamut) {
+		vig_gamut = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_VIG_GAMUT);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_3d_gamut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_vig_gamut(psde->pipe_hw, &hw_cfg);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_VIG_IGC &&
+			psde->pipe_hw->ops.setup_vig_igc) {
+		igc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_VIG_IGC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_igc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_vig_igc(psde->pipe_hw, &hw_cfg);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_DMA_IGC &&
+			psde->pipe_hw->ops.setup_dma_igc) {
+		igc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_DMA_IGC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_igc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_dma_igc(psde->pipe_hw, &hw_cfg,
+				pstate->multirect_index);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_DMA_GC &&
+			psde->pipe_hw->ops.setup_dma_gc) {
+		gc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_DMA_GC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_pgc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_dma_gc(psde->pipe_hw, &hw_cfg,
+				pstate->multirect_index);
+	}
+}
+#endif
+
 static void _sde_plane_setup_scaler(struct sde_plane *psde,
 		struct sde_plane_state *pstate,
 		const struct sde_format *fmt, bool color_fill)
@@ -1462,9 +1541,7 @@ static int _sde_plane_color_fill(struct sde_plane *psde,
 	const struct sde_format *fmt;
 	const struct drm_plane *plane;
 	struct sde_plane_state *pstate;
-	struct sde_crtc_state *cstate;
 	bool blend_enable = true;
-	u32 comp_color = 0;
 
 	if (!psde || !psde->base.state) {
 		SDE_ERROR("invalid plane\n");
@@ -1489,11 +1566,6 @@ static int _sde_plane_color_fill(struct sde_plane *psde,
 
 	blend_enable = (SDE_DRM_BLEND_OP_OPAQUE !=
 			sde_plane_get_property(pstate, PLANE_PROP_BLEND_OP));
-	/* read the property in FSC to RGB use case only */
-	cstate = to_sde_crtc_state(pstate->base.crtc->state);
-	if (SDE_FORMAT_IS_FSC(fmt) && !sde_crtc_is_connector_fsc(cstate))
-		comp_color = sde_plane_get_property(pstate,
-				PLANE_PROP_COLOR_COMPONENT);
 
 	/* update sspp */
 	if (fmt && psde->pipe_hw->ops.setup_solidfill) {
@@ -1512,8 +1584,7 @@ static int _sde_plane_color_fill(struct sde_plane *psde,
 			psde->pipe_hw->ops.setup_format(psde->pipe_hw,
 					fmt, blend_enable,
 					SDE_SSPP_SOLID_FILL,
-					pstate->multirect_index,
-					comp_color);
+					pstate->multirect_index);
 
 		if (psde->pipe_hw->ops.setup_rects)
 			psde->pipe_hw->ops.setup_rects(psde->pipe_hw,
@@ -1625,14 +1696,7 @@ static int sde_plane_rot_atomic_check(struct drm_plane *plane,
 		msm_fmt = msm_framebuffer_format(state->fb);
 		fmt = to_sde_format(msm_fmt);
 		ret = sde_format_validate_fmt(&sde_kms->base, fmt,
-				psde->pipe_sblk->in_rot_format_list);
-		if (ret) {
-			SDE_ERROR_PLANE(psde,
-				"fmt:%d mode:%d unpack:%d not found within the list!\n",
-				(fmt) ? fmt->base.pixel_format : 0,
-				(fmt) ? fmt->fetch_mode : 0,
-				(fmt) ? fmt->unpack_tight : 0);
-		}
+			psde->pipe_sblk->in_rot_format_list);
 	}
 
 exit:
@@ -2606,22 +2670,6 @@ static int _sde_plane_sspp_atomic_check_helper(struct sde_plane *psde,
 {
 	int ret = 0;
 	u32 min_src_size = SDE_FORMAT_IS_YUV(fmt) ? 2 : 1;
-	struct sde_kms *sde_kms = _sde_plane_get_kms(&psde->base);
-
-	if (!sde_kms) {
-		SDE_ERROR("invalid sde_kms\n");
-		return -EINVAL;
-	}
-
-	ret = sde_format_validate_fmt(&sde_kms->base, fmt,
-			psde->pipe_sblk->format_list);
-	if (ret) {
-		SDE_ERROR_PLANE(psde, "fmt:%d mode:%d unpack:%d not found within the list!\n",
-			(fmt) ? fmt->base.pixel_format : 0,
-			(fmt) ? fmt->fetch_mode : 0,
-			(fmt) ? fmt->unpack_tight : 0);
-		return ret;
-	}
 
 	if (SDE_FORMAT_IS_YUV(fmt) &&
 			(!(psde->features & SDE_SSPP_SCALER) ||
@@ -2804,8 +2852,8 @@ void sde_plane_flush(struct drm_plane *plane)
 	else if (psde->color_fill & SDE_PLANE_COLOR_FILL_FLAG)
 		/* force 100% alpha */
 		_sde_plane_color_fill(psde, psde->color_fill, 0xFF);
-	else if (psde->pipe_hw && psde->csc_ptr && psde->pipe_hw->ops.setup_csc)
-		psde->pipe_hw->ops.setup_csc(psde->pipe_hw, psde->csc_ptr);
+	else if (psde->pipe_hw && pstate->csc_ptr && psde->pipe_hw->ops.setup_csc)
+		psde->pipe_hw->ops.setup_csc(psde->pipe_hw, pstate->csc_ptr);
 
 	/* flag h/w flush complete */
 	if (plane->state)
@@ -2876,6 +2924,20 @@ static void _sde_plane_sspp_setup_sys_cache(struct sde_plane *psde,
 		pstate->sc_cfg.type = cache_type;
 	}
 
+	if (test_bit(SDE_MDP_LLCC_DISP_LR, &psde->catalog->mdp[0].features)) {
+		pstate->sc_cfg.rd_en = true;
+		pstate->sc_cfg.rd_noallocate = true;
+		pstate->sc_cfg.type = cache_type;
+		pstate->sc_cfg.rd_scid = sc_cfg[cache_type].llcc_scid;
+		pstate->sc_cfg.flags = SSPP_SYS_CACHE_EN_FLAG | SSPP_SYS_CACHE_SCID |
+					SSPP_SYS_CACHE_NO_ALLOC;
+		if (cache_type == SDE_SYS_CACHE_DISP_LEFT ||
+			cache_type == SDE_SYS_CACHE_DISP_RIGHT) {
+			pstate->sc_cfg.rd_op_type = SDE_SYS_CACHE_READ_INVALIDATE;
+			pstate->sc_cfg.flags |= SSPP_SYS_CACHE_OP_TYPE;
+		}
+	}
+
 	if (!pstate->sc_cfg.rd_en && !prev_rd_en)
 		return;
 
@@ -2929,15 +2991,13 @@ static void _sde_plane_map_prop_to_dirty_bits(void)
 
 	plane_prop_array[PLANE_PROP_MULTIRECT_MODE] =
 	plane_prop_array[PLANE_PROP_COLOR_FILL] =
-	plane_prop_array[PLANE_PROP_COLOR_COMPONENT] =
 		SDE_PLANE_DIRTY_ALL;
 
 	/* no special action required */
 	plane_prop_array[PLANE_PROP_INFO] =
 	plane_prop_array[PLANE_PROP_ALPHA] =
 	plane_prop_array[PLANE_PROP_INPUT_FENCE] =
-	plane_prop_array[PLANE_PROP_BLEND_OP] =
-	plane_prop_array[PLANE_PROP_BG_ALPHA] = 0;
+	plane_prop_array[PLANE_PROP_BLEND_OP] = 0;
 
 	plane_prop_array[PLANE_PROP_FB_TRANSLATION_MODE] =
 		SDE_PLANE_DIRTY_FB_TRANSLATION_MODE;
@@ -3155,9 +3215,7 @@ static void _sde_plane_update_roi_config(struct drm_plane *plane,
 static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 	struct sde_plane_state *pstate, const struct sde_format *fmt)
 {
-	uint32_t src_flags = 0, comp_color = 0;
-	struct sde_crtc_state *cstate = to_sde_crtc_state(
-			pstate->base.crtc->state);
+	uint32_t src_flags = 0;
 
 	SDE_DEBUG_PLANE(psde, "rotation 0x%X\n", pstate->rotation);
 	if (pstate->rotation & DRM_MODE_REFLECT_X)
@@ -3167,15 +3225,10 @@ static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 	if (pstate->rotation & DRM_MODE_ROTATE_90)
 		src_flags |= SDE_SSPP_ROT_90;
 
-	/* read the property in FSC to RGB use case only */
-	if (SDE_FORMAT_IS_FSC(fmt) && !sde_crtc_is_connector_fsc(cstate))
-		comp_color = sde_plane_get_property(pstate,
-				PLANE_PROP_COLOR_COMPONENT);
-
 	/* update format */
 	psde->pipe_hw->ops.setup_format(psde->pipe_hw, fmt,
 	   pstate->const_alpha_en, src_flags,
-	   pstate->multirect_index, comp_color);
+	   pstate->multirect_index);
 
 	if (psde->pipe_hw->ops.setup_cdp) {
 		struct sde_hw_pipe_cdp_cfg *cdp_cfg = &pstate->cdp_cfg;
@@ -3199,9 +3252,9 @@ static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 
 	/* update csc */
 	if (SDE_FORMAT_IS_YUV(fmt))
-		_sde_plane_setup_csc(psde);
+		_sde_plane_setup_csc(psde, pstate);
 	else
-		psde->csc_ptr = 0;
+		pstate->csc_ptr = 0;
 
 	if (psde->pipe_hw->ops.setup_inverse_pma) {
 		uint32_t pma_mode = 0;
@@ -3215,7 +3268,7 @@ static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 
 	if (psde->pipe_hw->ops.setup_dgm_csc)
 		psde->pipe_hw->ops.setup_dgm_csc(psde->pipe_hw,
-			pstate->multirect_index, psde->csc_usr_ptr);
+			pstate->multirect_index, pstate->csc_usr_ptr);
 
 	if (psde->pipe_hw->ops.set_ubwc_stats_roi) {
 		if (SDE_FORMAT_IS_UBWC(fmt) && !SDE_FORMAT_IS_YUV(fmt))
@@ -3225,6 +3278,11 @@ static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 			psde->pipe_hw->ops.set_ubwc_stats_roi(psde->pipe_hw,
 					pstate->multirect_index, NULL);
 	}
+#if defined(PXLW_IRIS_DUAL)
+	if (psde->pipe_hw->ops.setup_csc_v2)
+		psde->pipe_hw->ops.setup_csc_v2(psde->pipe_hw,
+			fmt, pstate->csc_usr_ptr);
+#endif
 }
 
 static void _sde_plane_update_sharpening(struct sde_plane *psde)
@@ -3280,7 +3338,13 @@ static void _sde_plane_update_properties(struct drm_plane *plane,
 			psde->pipe_hw->ops.setup_format)
 		_sde_plane_update_format_and_rects(psde, pstate, fmt);
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && iris_pq_disable)
+		sde_color_process_plane_disable(plane);
+	else
+#endif
 	sde_color_process_plane_setup(plane);
+
 
 	/* update sharpening */
 	if ((pstate->dirty & SDE_PLANE_DIRTY_SHARPEN) &&
@@ -3309,9 +3373,9 @@ static void _sde_plane_check_lut_dirty(struct sde_plane *psde,
 	struct sde_plane_state *pstate)
 {
 	/**
-	 * Valid configuration if scaler is not enabled or
-	 * lut flag is set
-	 */
+	* Valid configuration if scaler is not enabled or
+	* lut flag is set
+	*/
 	if (pstate->scaler3_cfg.lut_flag || !pstate->scaler3_cfg.enable)
 		return;
 
@@ -3872,13 +3936,6 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 		{SDE_SYSCACHE_LLCC_DISP_RIGHT,  "disp_right"},
 	};
 
-	static const struct drm_prop_enum_list e_comp_type[] = {
-		{SDE_COMP_NONE, "comp_none"},
-		{SDE_COMP_R, "comp_r"},
-		{SDE_COMP_G, "comp_g"},
-		{SDE_COMP_B, "comp_b"},
-	};
-
 	static const struct drm_prop_enum_list e_buffer_mode[] = {
 		{SDE_INDEPENDENT_BUFFER_MODE, "independent"},
 		{SDE_SINGLE_BUFFER_MODE, "single"},
@@ -3932,9 +3989,6 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 	msm_property_install_range(&psde->property_info, "alpha",
 		0x0, 0, 255, 255, PLANE_PROP_ALPHA);
 
-	msm_property_install_volatile_range(&psde->property_info, "bg_alpha",
-		0x0, 0, 255, 255, PLANE_PROP_BG_ALPHA);
-
 	/* linux default file descriptor range on each process */
 	msm_property_install_range(&psde->property_info, "input_fence",
 		0x0, 0, INR_OPEN_MAX, 0, PLANE_PROP_INPUT_FENCE);
@@ -3967,10 +4021,6 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 	msm_property_install_enum(&psde->property_info, "buffer_mode", 0x0,
 		0, e_buffer_mode, ARRAY_SIZE(e_buffer_mode), 0,
 		PLANE_PROP_BUFFER_MODE);
-
-	msm_property_install_enum(&psde->property_info, "color_comp", 0x0,
-		0, e_comp_type, ARRAY_SIZE(e_comp_type), 0,
-		PLANE_PROP_COLOR_COMPONENT);
 
 	if (psde->pipe_hw->ops.setup_solidfill)
 		msm_property_install_range(&psde->property_info, "color_fill",
@@ -4006,17 +4056,17 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 }
 
 static inline void _sde_plane_set_csc_v1(struct sde_plane *psde,
-		void __user *usr_ptr)
+		void __user *usr_ptr, struct sde_plane_state *pstate)
 {
 	struct sde_drm_csc_v1 csc_v1;
 	int i;
 
-	if (!psde) {
+	if (!psde || !pstate) {
 		SDE_ERROR("invalid plane\n");
 		return;
 	}
 
-	psde->csc_usr_ptr = NULL;
+	pstate->csc_usr_ptr = NULL;
 	if (!usr_ptr) {
 		SDE_DEBUG_PLANE(psde, "csc data removed\n");
 		return;
@@ -4029,16 +4079,16 @@ static inline void _sde_plane_set_csc_v1(struct sde_plane *psde,
 
 	/* populate from user space */
 	for (i = 0; i < SDE_CSC_MATRIX_COEFF_SIZE; ++i)
-		psde->csc_cfg.csc_mv[i] = csc_v1.ctm_coeff[i] >> 16;
+		pstate->csc_cfg.csc_mv[i] = csc_v1.ctm_coeff[i] >> 16;
 	for (i = 0; i < SDE_CSC_BIAS_SIZE; ++i) {
-		psde->csc_cfg.csc_pre_bv[i] = csc_v1.pre_bias[i];
-		psde->csc_cfg.csc_post_bv[i] = csc_v1.post_bias[i];
+		pstate->csc_cfg.csc_pre_bv[i] = csc_v1.pre_bias[i];
+		pstate->csc_cfg.csc_post_bv[i] = csc_v1.post_bias[i];
 	}
 	for (i = 0; i < SDE_CSC_CLAMP_SIZE; ++i) {
-		psde->csc_cfg.csc_pre_lv[i] = csc_v1.pre_clamp[i];
-		psde->csc_cfg.csc_post_lv[i] = csc_v1.post_clamp[i];
+		pstate->csc_cfg.csc_pre_lv[i] = csc_v1.pre_clamp[i];
+		pstate->csc_cfg.csc_post_lv[i] = csc_v1.post_clamp[i];
 	}
-	psde->csc_usr_ptr = &psde->csc_cfg;
+	pstate->csc_usr_ptr = &pstate->csc_cfg;
 }
 
 static inline void _sde_plane_set_scaler_v1(struct sde_plane *psde,
@@ -4275,7 +4325,7 @@ static int sde_plane_atomic_set_property(struct drm_plane *plane,
 				break;
 			case PLANE_PROP_CSC_V1:
 			case PLANE_PROP_CSC_DMA_V1:
-				_sde_plane_set_csc_v1(psde, (void __user *)val);
+				_sde_plane_set_csc_v1(psde, (void __user *)val, pstate);
 				break;
 			case PLANE_PROP_SCALER_V1:
 				_sde_plane_set_scaler_v1(psde, pstate,
@@ -5003,14 +5053,4 @@ void sde_plane_add_data_to_minidump_va(struct drm_plane *plane)
 	pstate = to_sde_plane_state(plane->state);
 	sde_mini_dump_add_va_region("sde_plane", sizeof(*sde_plane), sde_plane);
 	sde_mini_dump_add_va_region("plane_state", sizeof(*pstate), pstate);
-}
-
-bool sde_plane_property_is_dirty(struct drm_plane_state *plane_state,
-		uint32_t property_idx)
-{
-	struct sde_plane_state *pstate = to_sde_plane_state(plane_state);
-	struct sde_plane *psde = to_sde_plane(plane_state->plane);
-
-	return msm_property_is_dirty(&psde->property_info,
-			&pstate->property_state, property_idx);
 }
