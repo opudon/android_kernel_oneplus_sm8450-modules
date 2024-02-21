@@ -1568,7 +1568,7 @@ int dsi_display_set_power(struct drm_connector *connector,
 		msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK, &notifier_data);
 		break;
 	case SDE_MODE_DPMS_LP2:
-		rc = dsi_panel_set_lp2(display->panel);
+		rc = dsi_panel_set_lp1(display->panel);
 		blank = MSM_DRM_BLANK_POWERDOWN;
 		notifier_data.data = &blank;
 		notifier_data.id = 0;

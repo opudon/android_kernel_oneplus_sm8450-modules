@@ -1976,10 +1976,10 @@ int oplus_ofp_power_mode_handle(void *dsi_display, int power_mode)
 			if (rc) {
 				OFP_ERR("[%s] failed to send DSI_CMD_SET_LP1 cmds, rc=%d\n", display->name, rc);
 			}
-			rc = dsi_panel_set_lp2(display->panel);
+			/* rc = dsi_panel_set_lp2(display->panel);
 			if (rc) {
 				OFP_ERR("[%s] failed to send DSI_CMD_SET_LP2 cmds, rc=%d\n", display->name, rc);
-			}
+			} */
 
 			if (p_oplus_ofp_params->aod_light_mode) {
 				rc = oplus_ofp_display_cmd_set(display, DSI_CMD_AOD_LOW_LIGHT_MODE);
